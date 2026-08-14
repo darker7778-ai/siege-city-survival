@@ -23,7 +23,7 @@ import Timer from "lucide-react/dist/esm/icons/timer";
 import Users from "lucide-react/dist/esm/icons/users";
 import Zap from "lucide-react/dist/esm/icons/zap";
 import { ASSETS } from "@/game/assets";
-import { BUILDING_META, BuildingKey, completeTimers, collectResources, formatNumber, formatTimer, GameState, getWorldClock, loadGame, prepareRaid, resolveRaid, saveGame, startTraining, startUpgrade, activatePrototypeProduct } from "@/game/storage";
+import { BUILDING_META, BuildingKey, completeTimers, collectResources, formatNumber, formatTimer, GameState, getRaidForecast, getWorldClock, loadGame, prepareRaid, RaidLocationId, RAID_LOCATIONS, resolveRaid, saveGame, startTraining, startUpgrade, activatePrototypeProduct } from "@/game/storage";
 import { createGameScene, GameHandle } from "@/game/scene";
 
 type Screen = "city" | "build" | "militia" | "siege" | "alliance" | "shop";
@@ -68,6 +68,14 @@ const BUILDING_ART: Record<BuildingKey, string> = {
   barracks: ASSETS.buildings.barracks,
 };
 
+const RAID_RESOURCE_ITEMS = [
+  { key: "food", label: "Еда", icon: ASSETS.icons.food },
+  { key: "wood", label: "Дерево", icon: ASSETS.icons.wood },
+  { key: "metal", label: "Металл", icon: ASSETS.icons.metal },
+  { key: "stone", label: "Камень", icon: ASSETS.icons.stone },
+  { key: "gold", label: "Монеты", icon: ASSETS.icons.gold },
+] as const;
+
 function telegram() {
   return typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
 }
@@ -81,7 +89,7 @@ export default function GameCanvas() {
   const engineRef = useRef<any>(null);
   const handleRef = useRef<GameHandle | null>(null);
   const mountedRef = useRef(false);
-  const [screen, setScreen] = useState<Screen>(new URLSearchParams(window.location.search).get("demo") ? "city" : "city");
+  const [screen, setScreen] = useState<Screen>(() => new URLSearchParams(window.location.search).get("screen") === "siege" ? "siege" : "city");
   const [game, setGame] = useState<GameState>(() => loadGame());
   const [now, setNow] = useState(Date.now());
   const [loading, setLoading] = useState(true);
@@ -178,12 +186,12 @@ export default function GameCanvas() {
     showNotice("Набор начат · вернитесь через 08м");
   }, [game, showNotice, updateGame]);
 
-  const raid = useCallback(() => {
+  const raid = useCallback((locationId: RaidLocationId = "supermarket") => {
     haptic("medium");
     const nowValue = Date.now();
     const clock = getWorldClock(nowValue);
     if (clock.phase === "dusk") {
-      const result = prepareRaid(game, nowValue);
+      const result = prepareRaid(game, nowValue, locationId);
       if ("error" in result) { showNotice(`${result.error}: ${result.message}`); return; }
       telegram()?.enableClosingConfirmation?.();
       updateGame(result.state);
@@ -318,11 +326,40 @@ function MilitiaScreen({ game, now, onBack, onTrain, onRaid }: { game: GameState
   return <div className="inner-screen"><ScreenHeader index="03" title="Ополчение" subtitle="Люди — не ресурс. Возвращайте их домой." onBack={onBack} /><div className="militia-hero"><div className="militia-copy"><span className="eyebrow">КАЗАРМЫ / СТАТУС</span><h2>{game.militia} <small>/ {game.militiaCapacity}</small></h2><p>Готовы держать периметр и выйти в ночь.</p><div className="capacity-line"><span style={{ width: `${(game.militia / game.militiaCapacity) * 100}%` }} /></div></div><img src={ASSETS.militia} alt="Ополченец в тяжёлом пальто" /></div><div className="action-grid"><button className="primary-action" onClick={onTrain} disabled={Boolean(training)}><Users size={18} /> {training ? `НАБОР / ${training}` : "НАЧАТЬ НАБОР"}</button><button className="secondary-action raid-entry" onClick={onRaid}><Swords size={17} /> ОТКРЫТЬ ОСАДУ <ChevronRight size={15} /></button></div><div className="warning-note"><AlertTriangle size={16} /><p><b>Щит новичка активен.</b> Первые 3 дня город нельзя выбрать целью. Даже при поражении часть ополчения возвращается.</p></div></div>;
 }
 
-function SiegeScreen({ game, now, onBack, onRaid }: { game: GameState; now: number; onBack: () => void; onRaid: () => void }) {
+function SiegeScreen({ game, now, onBack, onRaid }: { game: GameState; now: number; onBack: () => void; onRaid: (locationId?: RaidLocationId) => void }) {
   const clock = getWorldClock(now);
-  const available = clock.phase === "dusk" || (clock.phase === "night" && Boolean(game.raidAssignedAt));
-  const actionLabel = clock.phase === "dusk" ? "НАЗНАЧИТЬ ВЫЛАЗКУ" : clock.phase === "night" ? (game.raidAssignedAt ? "ИСПОЛНИТЬ ВЫЛАЗКУ" : "НЕТ НАЗНАЧЕНИЯ") : "ОКНО ЗАКРЫТО";
-  return <div className="inner-screen siege-screen"><ScreenHeader index="04" title="Осада" subtitle="Асинхронный набег / один приказ до рассвета" onBack={onBack} /><div className="raid-map" style={{ backgroundImage: `linear-gradient(180deg, rgba(12,16,22,.08), rgba(12,16,22,.88)), url(${ASSETS.hero})` }}><div className="raid-target"><span className="eyebrow">ЦЕЛЬ / СЕКТОР 09</span><strong>Дымный рынок</strong><span>Защита: 76 · Добыча: до 20%</span></div><div className="raid-path"><span /><span /><span /><span /></div></div><div className="raid-loadout"><div><span className="eyebrow">ВЫЛАЗКА / СОСТАВ</span><strong>{Math.floor(game.militia * 0.75)} ополченцев</strong><p>Рюкзак 12 кг · глубина 8 нодов</p></div><div className="raid-stat"><Swords size={17} /><b>61</b><span>мощность</span></div><div className="raid-stat"><BatteryCharging size={17} /><b>87%</b><span>готовность</span></div></div><button className="primary-action wide" onClick={onRaid} disabled={!available}><Swords size={18} /> {actionLabel} <span className="action-note">{clock.detail}</span></button><p className="legal-note">{clock.phase === "dusk" ? "Только сумерки открывают назначение. Ночью исполняется уже назначенная вылазка." : "Результат считается локально в v0.1-прототипе; серверная синхронизация появится до релиза."}</p></div>;
+  const assigned = Boolean(game.raidAssignedAt);
+  const [selectedLocation, setSelectedLocation] = useState<RaidLocationId>(game.raidLocation || "supermarket");
+  const locationId = game.raidLocation || selectedLocation;
+  const location = RAID_LOCATIONS[locationId];
+  const forecast = getRaidForecast(game, locationId);
+  const available = !assigned && clock.phase === "dusk" || assigned && clock.phase === "night";
+  const actionLabel = !assigned && clock.phase === "dusk" ? "НАЗНАЧИТЬ ВЫЛАЗКУ" : assigned && clock.phase === "night" ? "ИСПОЛНИТЬ ВЫЛАЗКУ" : assigned ? "НАЗНАЧЕНИЕ СОХРАНЕНО" : "ОКНО ЗАКРЫТО";
+  const phaseIndex = assigned && clock.phase === "night" ? 2 : assigned ? 1 : 0;
+  const report = game.lastRaidReport;
+  return <div className="inner-screen siege-screen">
+    <ScreenHeader index="04" title="Сумеречная вылазка" subtitle="Один маршрут. Один рюкзак. Один отчёт до рассвета." onBack={onBack} />
+    <div className="raid-state-line" aria-label="Состояние рейда">
+      {["ПОДГОТОВКА", "НАЗНАЧЕНО", "ВОЗВРАТ"].map((label, index) => <div key={label} className={index <= phaseIndex ? "current" : ""}><span>0{index + 1}</span><b>{label}</b></div>)}
+    </div>
+    <div className="raid-map detailed" style={{ backgroundImage: `linear-gradient(180deg, rgba(12,16,22,.08), rgba(12,16,22,.94)), url(${ASSETS.hero})` }}>
+      <div className="raid-map-header"><span className="eyebrow">НОЧНОЙ МАРШРУТ / ДЕНЬ {clock.day}</span><span className={`risk-pill risk-${location.risk >= 50 ? "high" : location.risk >= 35 ? "mid" : "low"}`}>{location.risk}% РИСК NPC</span></div>
+      <div className="raid-target"><span className="eyebrow">ЦЕЛЬ / {location.shortName}</span><strong>{location.name}</strong><span>{location.depth} нодов · {location.profile}</span></div>
+      <div className="raid-path detailed-path">{Array.from({ length: location.depth }, (_, index) => <span key={index} className={index < Math.max(1, Math.floor(location.depth * .45)) ? "revealed" : ""} />)}</div>
+    </div>
+    {!assigned && <div className="raid-location-picker"><div className="section-kicker"><MapPinned size={13} /> ВЫБОР ЛОКАЦИИ / ПЕРЕД СНИМКОМ</div><div className="location-grid">{Object.values(RAID_LOCATIONS).map((item) => <button key={item.id} className={`location-card ${selectedLocation === item.id ? "selected" : ""}`} onClick={() => setSelectedLocation(item.id)} disabled={clock.phase !== "dusk"}><span className={`location-index ${item.accent}`}>0{Object.values(RAID_LOCATIONS).indexOf(item) + 1}</span><span><b>{item.name}</b><small>{item.depth} нодов · риск {item.risk}%</small></span><ChevronRight size={15} /></button>)}</div>{clock.phase !== "dusk" && <p className="phase-lock"><Timer size={13} /> Назначение открывается в сумерках, 20:00–21:00 игрового времени.</p>}</div>}
+    <div className="raid-loadout detailed-loadout"><div><span className="eyebrow">СОСТАВ / SNAPSHOT</span><strong>{forecast.sent} ополченцев</strong><p>{assigned ? "Состав зафиксирован до рассвета." : "75% доступного состава · минимум 4 человека"}</p></div><div className="raid-stat"><Swords size={17} /><b>{forecast.survivalChance}%</b><span>шанс возврата</span></div><div className="raid-stat"><PackageOpen size={17} /><b>{forecast.estimatedWeight}/{forecast.capacity}</b><span>кг прогноз</span></div></div>
+    <div className="raid-forecast"><div className="forecast-heading"><div><span className="section-kicker"><PackageOpen size={13} /> ПРОГНОЗ ДОБЫЧИ</span><h2>Что может вернуться в склад</h2></div><span className="forecast-nodes">{forecast.nodes} НОДОВ</span></div><div className="loot-grid">{RAID_RESOURCE_ITEMS.map((item) => { const range = forecast.loot[item.key]; return <div className="loot-row" key={item.key}><img src={item.icon} alt="" /><span><b>{item.label}</b><small>{location.accent === "food" && item.key === "food" ? "профиль локации · 40%" : "вес учтён в рюкзаке"}</small></span><strong>{range.min}–{range.max}</strong></div>; })}</div><div className="weight-meter"><div><span>РЮКЗАК / ПРОГНОЗИРУЕМЫЙ ВЕС</span><b>{forecast.estimatedWeight.toFixed(1)} / {forecast.capacity.toFixed(1)} кг</b></div><span className="weight-track"><i style={{ width: `${Math.min(100, (forecast.estimatedWeight / forecast.capacity) * 100)}%` }} /></span></div></div>
+    {report && !assigned && <RaidReportCard report={report} />}
+    <button className="primary-action wide" onClick={() => onRaid(locationId)} disabled={!available}><Swords size={18} /> {actionLabel} <span className="action-note">{assigned ? `${clock.detail} · snapshot` : clock.detail}</span></button>
+    <div className="raid-rules"><div><Shield size={15} /><span><b>Честный риск</b><small>{location.risk}% встреч с NPC видны до назначения</small></span></div><div><BatteryCharging size={15} /><span><b>Ограничение</b><small>Энергия ≥25 · без критического ранения</small></span></div><div><AlertTriangle size={15} /><span><b>Потери</b><small>При отходе сохраняется добыча до текущего нода</small></span></div></div>
+    <p className="legal-note">{assigned ? "Состав и маршрут зафиксированы локальным snapshot. Ночью доступно исполнение или досрочный возврат в следующей серверной итерации." : clock.phase === "dusk" ? "В сумерках выбирается локация и создаётся снимок состава. Будущие ноды не раскрываются до исполнения." : "Окно назначения закрыто. Вернитесь в сумерки, чтобы выбрать маршрут и отправить ополчение."}</p>
+  </div>;
+}
+
+function RaidReportCard({ report }: { report: NonNullable<GameState["lastRaidReport"]> }) {
+  const location = RAID_LOCATIONS[report.location];
+  return <section className={`raid-report ${report.victory ? "success" : "hard"}`} aria-label="Отчёт о результатах вылазки"><div className="report-header"><div><span className="section-kicker"><Check size={13} /> ПОСЛЕДНИЙ ОТЧЁТ / ДЕНЬ {report.day}</span><h2>{report.victory ? "Груз дошёл" : "Отход под огнём"}</h2><p>{location.name} · {report.nodes} нодов · {report.returned}/{report.sent} вернулись</p></div><span className="report-stamp">{report.victory ? "ДОСТАВЛЕНО" : "ЧАСТИЧНО"}</span></div><p className="report-outcome">{report.outcome}</p><div className="report-columns"><div><span className="report-column-title">СОБРАНО</span>{RAID_RESOURCE_ITEMS.map((item) => <div className="report-line" key={`c-${item.key}`}><span><img src={item.icon} alt="" />{item.label}</span><b>+{report.collected[item.key]}</b></div>)}</div><div><span className="report-column-title">ВОЗВРАЩЕНО</span>{RAID_RESOURCE_ITEMS.map((item) => <div className="report-line" key={`r-${item.key}`}><span><img src={item.icon} alt="" />{item.label}</span><b>+{report.returnedLoot[item.key]}</b></div>)}</div><div><span className="report-column-title">ПОТЕРЯНО</span>{RAID_RESOURCE_ITEMS.map((item) => <div className="report-line loss" key={`l-${item.key}`}><span><img src={item.icon} alt="" />{item.label}</span><b>−{report.lost[item.key]}</b></div>)}</div></div><div className="report-footer"><span><PackageOpen size={14} /> {report.weightUsed.toFixed(1)} / {report.capacity} кг</span><span><BatteryCharging size={14} /> −{report.energySpent} энергии</span><span><Shield size={14} /> {report.moraleDelta > 0 ? "+" : ""}{report.moraleDelta} мораль</span></div></section>;
 }
 
 function AllianceScreen({ onBack, telegramMode }: { onBack: () => void; telegramMode: boolean }) {

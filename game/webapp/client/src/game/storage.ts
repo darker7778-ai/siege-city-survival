@@ -18,6 +18,11 @@ export type WorldClock = {
 export type Resources = { wood: number; stone: number; food: number; metal: number; gold: number; stars: number };
 export type Building = { key: BuildingKey; name: string; shortName: string; level: number; maxLevel: number; rate?: string };
 export type QueueItem = { id: string; building: BuildingKey; targetLevel: number; startedAt: number; doneAt: number };
+export type RaidLocationId = "supermarket" | "pharmacy" | "industrial" | "residential";
+export type RaidLoot = Pick<Resources, "wood" | "stone" | "food" | "metal" | "gold">;
+export type RaidLocation = { id: RaidLocationId; name: string; shortName: string; depth: number; risk: number; profile: string; accent: "food" | "medical" | "materials" | "mixed"; baseLoot: RaidLoot };
+export type RaidForecast = { sent: number; nodes: number; risk: number; survivalChance: number; capacity: number; estimatedWeight: number; loot: Record<keyof RaidLoot, { min: number; max: number }> };
+export type RaidReport = { location: RaidLocationId; day: number; sent: number; returned: number; nodes: number; risk: number; victory: boolean; collected: RaidLoot; lost: RaidLoot; returnedLoot: RaidLoot; weightUsed: number; capacity: number; energySpent: number; moraleDelta: number; resolvedAt: number; outcome: string };
 
 export type GameState = {
   resources: Resources;
@@ -30,6 +35,8 @@ export type GameState = {
   lastTickWorldDay: number;
   raidAssignedAt: number | null;
   raidWorldDay: number | null;
+  raidLocation: RaidLocationId | null;
+  lastRaidReport: RaidReport | null;
   onboardingComplete: boolean;
   news: string[];
   totalRaids: number;
@@ -53,6 +60,15 @@ export const BUILDING_META: Record<BuildingKey, Omit<Building, "level">> = {
   quarry: { key: "quarry", name: "Каменоломня", shortName: "Каменоломня", maxLevel: 8, rate: "6 камня/ч" },
   barracks: { key: "barracks", name: "Казармы", shortName: "Казармы", maxLevel: 8, rate: "20 мест" },
 };
+
+export const RAID_LOCATIONS: Record<RaidLocationId, RaidLocation> = {
+  supermarket: { id: "supermarket", name: "Супермаркет", shortName: "МАРКЕТ", depth: 8, risk: 25, profile: "Еда / вода / запасные материалы", accent: "food", baseLoot: { wood: 8, stone: 3, food: 18, metal: 2, gold: 1 } },
+  pharmacy: { id: "pharmacy", name: "Аптека", shortName: "АПТЕКА", depth: 7, risk: 35, profile: "Медицинский запас / редкий металл", accent: "medical", baseLoot: { wood: 4, stone: 2, food: 7, metal: 8, gold: 2 } },
+  industrial: { id: "industrial", name: "Промзона", shortName: "ПРОМЗОНА", depth: 9, risk: 40, profile: "Материалы / металл / детали", accent: "materials", baseLoot: { wood: 14, stone: 10, food: 3, metal: 18, gold: 1 } },
+  residential: { id: "residential", name: "Жилой квартал", shortName: "КВАРТАЛ", depth: 8, risk: 55, profile: "Смешанная добыча / торговый NPC", accent: "mixed", baseLoot: { wood: 11, stone: 5, food: 10, metal: 6, gold: 4 } },
+};
+
+const RAID_WEIGHTS: Record<keyof RaidLoot, number> = { wood: 0.1, stone: 0.2, food: 0.4, metal: 0.15, gold: 0.05 };
 
 function pad(value: number) { return String(value).padStart(2, "0"); }
 
@@ -94,7 +110,7 @@ export function createDefaultState(now = Date.now()): GameState {
     },
     queue: [], militia: 14, militiaCapacity: 20, trainingDoneAt: null,
     lastCollectedAt: now - 52 * MINUTE_MS, lastTickWorldDay: clock.day,
-    raidAssignedAt: null, raidWorldDay: null, onboardingComplete: false,
+    raidAssignedAt: null, raidWorldDay: null, raidLocation: null, lastRaidReport: null, onboardingComplete: false,
     news: ["Город пережил ночь. Сборщики снова работают.", "В дальнем секторе замечен дым — возможно, есть движение."],
     totalRaids: 0, lastRaidAt: null,
   };
@@ -118,6 +134,8 @@ export function loadGame(): GameState {
       lastTickWorldDay: typeof parsed.lastTickWorldDay === "number" ? parsed.lastTickWorldDay : defaults.lastTickWorldDay,
       raidAssignedAt: parsed.raidAssignedAt ?? null,
       raidWorldDay: parsed.raidWorldDay ?? null,
+      raidLocation: parsed.raidLocation ?? null,
+      lastRaidReport: parsed.lastRaidReport ?? null,
     };
   } catch { return createDefaultState(); }
 }
@@ -186,27 +204,44 @@ export function startTraining(state: GameState, now = Date.now()) {
   return { state: { ...state, resources: { ...state.resources, food: state.resources.food - 2 }, trainingDoneAt: now + 8 * 60_000, news: ["В казармах начался набор ополчения.", ...state.news].slice(0, 8) } };
 }
 
-export function prepareRaid(state: GameState, now = Date.now()) {
+export function getRaidForecast(state: GameState, locationId: RaidLocationId): RaidForecast {
+  const location = RAID_LOCATIONS[locationId];
+  const sent = Math.max(4, Math.min(state.militia, Math.floor(state.militia * 0.75)));
+  const readiness = Math.min(1.25, Math.max(0.72, sent / 12));
+  const loot = Object.fromEntries((Object.keys(location.baseLoot) as Array<keyof RaidLoot>).map((key) => {
+    const base = location.baseLoot[key] * readiness;
+    return [key, { min: Math.max(0, Math.floor(base * 0.72)), max: Math.max(1, Math.ceil(base * 1.28)) }];
+  })) as RaidForecast["loot"];
+  const estimatedWeight = (Object.keys(location.baseLoot) as Array<keyof RaidLoot>).reduce((sum, key) => sum + location.baseLoot[key] * readiness * RAID_WEIGHTS[key], 0);
+  return { sent, nodes: location.depth, risk: location.risk, survivalChance: Math.round(Math.min(94, Math.max(42, 86 - location.risk * 0.42 + sent * 1.1))), capacity: 12, estimatedWeight: Number(estimatedWeight.toFixed(1)), loot };
+}
+
+export function prepareRaid(state: GameState, now = Date.now(), locationId: RaidLocationId = "supermarket") {
   const clock = getWorldClock(now);
   if (clock.phase !== "dusk") return { state, error: "RAID_WINDOW_CLOSED", message: `Назначение вылазки доступно только в сумерках. Сейчас: ${clock.phaseLabel}.` };
   if (state.raidAssignedAt) return { state, error: "RAID_ALREADY_ASSIGNED", message: "Вылазка уже назначена на эту ночь." };
   if (state.militia < 4) return { state, error: "NOT_ENOUGH_MILITIA", message: "Нужно минимум 4 готовых ополченца." };
-  return { state: { ...state, raidAssignedAt: now, raidWorldDay: clock.day, news: [`Вылазка назначена на ночь Дня ${clock.day}.`, ...state.news].slice(0, 8) } };
+  return { state: { ...state, raidAssignedAt: now, raidWorldDay: clock.day, raidLocation: locationId, news: [`Вылазка назначена: ${RAID_LOCATIONS[locationId].name}, ночь Дня ${clock.day}.`, ...state.news].slice(0, 8) } };
 }
 
 export function resolveRaid(state: GameState, now = Date.now()) {
   const clock = getWorldClock(now);
   if (clock.phase !== "night") return { state, error: "NIGHT_NOT_ACTIVE", message: "Вылазка исполняется только ночью." };
   if (!state.raidAssignedAt || state.raidWorldDay !== clock.day) return { state, error: "RAID_NOT_ASSIGNED", message: "Сначала назначьте вылазку в сумерках." };
+  const location = RAID_LOCATIONS[state.raidLocation || "supermarket"];
   const sent = Math.max(4, Math.min(state.militia, Math.floor(state.militia * 0.75)));
-  const signal = Math.abs(Math.sin(clock.day * 3.17));
-  const victory = signal > 0.34;
-  const returned = victory ? Math.max(3, Math.floor(sent * 0.62)) : Math.max(3, Math.floor(sent * 0.4));
-  const wood = victory ? 55 + Math.floor(signal * 42) : 18;
-  const stone = victory ? 28 + Math.floor(signal * 24) : 10;
-  const food = victory ? 9 : 3;
-  const next: GameState = { ...state, resources: { ...state.resources, wood: state.resources.wood + wood, stone: state.resources.stone + stone, food: state.resources.food + food }, militia: Math.min(state.militiaCapacity, state.militia - sent + returned), raidAssignedAt: null, raidWorldDay: null, totalRaids: state.totalRaids + 1, lastRaidAt: now, news: [`${victory ? "Успешная осада" : "Тяжёлое возвращение"}: +${wood} дерева, +${stone} камня; вернулось ${returned}/${sent}.`, ...state.news].slice(0, 8) };
-  return { state: next, victory, sent, returned, wood, stone, food };
+  const signal = Math.abs(Math.sin(clock.day * 3.17 + location.risk * 0.013));
+  const victory = signal > location.risk / 100 + 0.05;
+  const returned = victory ? Math.max(3, Math.floor(sent * (0.62 - location.risk * 0.0008))) : Math.max(3, Math.floor(sent * 0.4));
+  const multiplier = victory ? 0.88 + signal * 0.42 : 0.34 + signal * 0.18;
+  const collected = (Object.keys(location.baseLoot) as Array<keyof RaidLoot>).reduce((loot, key) => ({ ...loot, [key]: Math.max(0, Math.floor(location.baseLoot[key] * multiplier * Math.max(0.8, sent / 10))) }), {} as RaidLoot);
+  const lossRate = victory ? 0.12 + location.risk / 500 : 0.5;
+  const lost = (Object.keys(collected) as Array<keyof RaidLoot>).reduce((loot, key) => ({ ...loot, [key]: Math.floor(collected[key] * lossRate) }), {} as RaidLoot);
+  const returnedLoot = (Object.keys(collected) as Array<keyof RaidLoot>).reduce((loot, key) => ({ ...loot, [key]: Math.max(0, collected[key] - lost[key]) }), {} as RaidLoot);
+  const weightUsed = Number((Object.keys(returnedLoot) as Array<keyof RaidLoot>).reduce((sum, key) => sum + returnedLoot[key] * RAID_WEIGHTS[key], 0).toFixed(1));
+  const report: RaidReport = { location: location.id, day: clock.day, sent, returned, nodes: location.depth, risk: location.risk, victory, collected, lost, returnedLoot, weightUsed, capacity: 12, energySpent: victory ? 18 : 28, moraleDelta: victory ? -5 : 3, resolvedAt: now, outcome: victory ? "Маршрут пройден. Груз доставлен в убежище." : "Контакт сорвал маршрут. Часть груза потеряна при отходе." };
+  const next: GameState = { ...state, resources: { ...state.resources, wood: state.resources.wood + returnedLoot.wood, stone: state.resources.stone + returnedLoot.stone, food: state.resources.food + returnedLoot.food, metal: state.resources.metal + returnedLoot.metal, gold: state.resources.gold + returnedLoot.gold }, militia: Math.min(state.militiaCapacity, state.militia - sent + returned), raidAssignedAt: null, raidWorldDay: null, raidLocation: null, lastRaidReport: report, totalRaids: state.totalRaids + 1, lastRaidAt: now, news: [`${victory ? "Вылазка завершена" : "Тяжёлое возвращение"}: ${location.name}, возвращено ${returned}/${sent}.`, ...state.news].slice(0, 8) };
+  return { state: next, victory, sent, returned, report };
 }
 
 export function activatePrototypeProduct(state: GameState, product: "speed" | "slot" | "bundle", now = Date.now()) {
