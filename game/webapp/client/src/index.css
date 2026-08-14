@@ -71,6 +71,21 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--amber-hot); out
 .resource-item small { color: var(--faded); font-size: 9px; line-height: 1; }
 .resource-item b { color: var(--paper); font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 500; }
 .resource-item.stars b { color: var(--amber-hot); }
+.vitals-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 10px 0 0; }
+.vital-card { display: grid; grid-template-columns: 28px 1fr auto; gap: 9px; align-items: center; min-width: 0; padding: 9px 10px; border: 1px solid var(--line-soft); background: rgba(21,27,34,.72); }
+.vital-card.energy { border-color: rgba(196,162,101,.26); }
+.vital-card.morale { border-color: rgba(127,164,181,.26); }
+.vital-icon { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid currentColor; color: var(--amber); }
+.vital-card.morale .vital-icon { color: var(--blue); }
+.vital-copy { display: grid; gap: 6px; min-width: 0; }
+.vital-copy small { overflow: hidden; color: var(--faded); font-family: "IBM Plex Mono", monospace; font-size: 8px; letter-spacing: .05em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.vital-copy i { display: block; height: 5px; background: var(--line); }
+.vital-copy i b { display: block; height: 100%; background: linear-gradient(90deg, var(--amber), var(--amber-hot)); transition: width .28s var(--ease-out); }
+.vital-card.morale .vital-copy i b { background: linear-gradient(90deg, #6f9db0, #b6d1d7); }
+.vital-card.low .vital-copy i b { background: linear-gradient(90deg, #ba8d50, #e2b46f); }
+.vital-card.critical .vital-copy i b { background: var(--red); }
+.vital-card strong { color: var(--paper); font-family: "IBM Plex Mono", monospace; font-size: 15px; font-weight: 500; white-space: nowrap; }
+.vital-card strong small { color: var(--faded); font-size: 9px; }
 
 .screen-body { min-height: 620px; padding: 28px 0 22px; }
 .screen-heading { display: flex; justify-content: space-between; align-items: end; gap: 14px; margin-bottom: 18px; }
@@ -191,6 +206,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--amber-hot); out
 .raid-stat b { color: var(--paper); font-family: "IBM Plex Mono", monospace; font-size: 17px; font-weight: 500; }
 .raid-stat span { color: var(--faded); font-family: "IBM Plex Mono", monospace; font-size: 8px; text-transform: uppercase; }
 .detailed-loadout { margin-top: 12px; }
+.raid-vitals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.raid-vitals .vital-card { background: rgba(15,21,27,.72); }
 .forecast-heading, .report-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .forecast-heading h2, .report-header h2 { margin: 5px 0 2px; font-family: "Barlow Condensed", sans-serif; font-size: 25px; text-transform: uppercase; }
 .forecast-nodes { color: var(--faded); font-family: "IBM Plex Mono", monospace; font-size: 9px; }
@@ -221,6 +238,14 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--amber-hot); out
 .report-line img { width: 15px; height: 15px; object-fit: contain; }
 .report-line b { color: #a4c69c; font-weight: 500; }
 .report-line.loss b { color: #e38d75; }
+.report-vitals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.report-vital { display: grid; gap: 5px; padding: 9px; border: 1px solid var(--line-soft); background: rgba(12,16,22,.38); }
+.report-vital > span { display: flex; align-items: center; gap: 5px; color: var(--faded); font-family: "IBM Plex Mono", monospace; font-size: 8px; letter-spacing: .08em; }
+.report-vital.energy > span svg { color: var(--amber); }
+.report-vital.morale > span svg { color: var(--blue); }
+.report-vital b { color: var(--paper); font-family: "Barlow Condensed", sans-serif; font-size: 28px; line-height: .9; }
+.report-vital b small { color: var(--faded); font-family: "IBM Plex Mono", monospace; font-size: 10px; }
+.report-vital em { color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 8px; font-style: normal; }
 .report-footer { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line-soft); color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 8px; }
 .report-footer span { display: inline-flex; align-items: center; gap: 4px; }
 .report-footer svg { color: var(--amber); }
@@ -281,6 +306,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--amber-hot); out
   .icon-button { grid-column: 2; grid-row: 1; }
   .resource-strip { gap: 7px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .resource-item { min-width: 68px; padding-right: 7px; }
+  .vitals-strip { grid-template-columns: 1fr; gap: 6px; }
+  .vital-card { padding: 8px; }
   .screen-body { padding-top: 22px; }
   .screen-heading h1 { font-size: 45px; }
   .city-viewport { min-height: 292px; }
@@ -307,6 +334,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--amber-hot); out
   .report-columns { gap: 6px; }
   .report-line { font-size: 8px; }
   .report-line img { width: 13px; height: 13px; }
+  .report-vitals { gap: 6px; }
+  .report-vital { padding: 8px; }
   .raid-rules { grid-template-columns: 1fr; }
   .raid-rules > div { min-height: 40px; }
   .alliance-actions, .action-grid { grid-template-columns: 1fr; }

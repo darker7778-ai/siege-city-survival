@@ -22,7 +22,7 @@ export type RaidLocationId = "supermarket" | "pharmacy" | "industrial" | "reside
 export type RaidLoot = Pick<Resources, "wood" | "stone" | "food" | "metal" | "gold">;
 export type RaidLocation = { id: RaidLocationId; name: string; shortName: string; depth: number; risk: number; profile: string; accent: "food" | "medical" | "materials" | "mixed"; baseLoot: RaidLoot };
 export type RaidForecast = { sent: number; nodes: number; risk: number; survivalChance: number; capacity: number; estimatedWeight: number; loot: Record<keyof RaidLoot, { min: number; max: number }> };
-export type RaidReport = { location: RaidLocationId; day: number; sent: number; returned: number; nodes: number; risk: number; victory: boolean; collected: RaidLoot; lost: RaidLoot; returnedLoot: RaidLoot; weightUsed: number; capacity: number; energySpent: number; moraleDelta: number; resolvedAt: number; outcome: string };
+export type RaidReport = { location: RaidLocationId; day: number; sent: number; returned: number; nodes: number; risk: number; victory: boolean; collected: RaidLoot; lost: RaidLoot; returnedLoot: RaidLoot; weightUsed: number; capacity: number; energySpent: number; moraleDelta: number; energyAfter?: number; moraleAfter?: number; resolvedAt: number; outcome: string };
 
 export type GameState = {
   resources: Resources;
@@ -30,6 +30,10 @@ export type GameState = {
   queue: QueueItem[];
   militia: number;
   militiaCapacity: number;
+  energy: number;
+  maxEnergy: number;
+  morale: number;
+  maxMorale: number;
   trainingDoneAt: number | null;
   lastCollectedAt: number;
   lastTickWorldDay: number;
@@ -108,7 +112,7 @@ export function createDefaultState(now = Date.now()): GameState {
       quarry: { ...BUILDING_META.quarry, level: 1 },
       barracks: { ...BUILDING_META.barracks, level: 1 },
     },
-    queue: [], militia: 14, militiaCapacity: 20, trainingDoneAt: null,
+    queue: [], militia: 14, militiaCapacity: 20, energy: 84, maxEnergy: 100, morale: 72, maxMorale: 100, trainingDoneAt: null,
     lastCollectedAt: now - 52 * MINUTE_MS, lastTickWorldDay: clock.day,
     raidAssignedAt: null, raidWorldDay: null, raidLocation: null, lastRaidReport: null, onboardingComplete: false,
     news: ["Город пережил ночь. Сборщики снова работают.", "В дальнем секторе замечен дым — возможно, есть движение."],
@@ -131,6 +135,10 @@ export function loadGame(): GameState {
       buildings: { ...defaults.buildings, ...parsed.buildings },
       queue: Array.isArray(parsed.queue) ? parsed.queue : [],
       news: Array.isArray(parsed.news) ? parsed.news.slice(0, 8) : defaults.news,
+      energy: typeof parsed.energy === "number" ? Math.max(0, Math.min(defaults.maxEnergy, parsed.energy)) : defaults.energy,
+      maxEnergy: typeof parsed.maxEnergy === "number" ? Math.max(1, parsed.maxEnergy) : defaults.maxEnergy,
+      morale: typeof parsed.morale === "number" ? Math.max(0, Math.min(defaults.maxMorale, parsed.morale)) : defaults.morale,
+      maxMorale: typeof parsed.maxMorale === "number" ? Math.max(1, parsed.maxMorale) : defaults.maxMorale,
       lastTickWorldDay: typeof parsed.lastTickWorldDay === "number" ? parsed.lastTickWorldDay : defaults.lastTickWorldDay,
       raidAssignedAt: parsed.raidAssignedAt ?? null,
       raidWorldDay: parsed.raidWorldDay ?? null,
@@ -143,6 +151,7 @@ export function loadGame(): GameState {
 export function saveGame(state: GameState) { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 export function formatNumber(value: number) { return Math.floor(value).toLocaleString("ru-RU"); }
 export function formatTimer(ms: number) { if (ms <= 0) return "ГОТОВО"; const totalSeconds = Math.ceil(ms / 1000); const hours = Math.floor(totalSeconds / 3600); const minutes = Math.floor((totalSeconds % 3600) / 60); const seconds = totalSeconds % 60; if (hours > 0) return `${hours}ч ${pad(minutes)}м`; return `${pad(minutes)}м ${pad(seconds)}с`; }
+export function vitalPercent(value: number, max: number) { return Math.min(100, Math.max(0, (value / Math.max(1, max)) * 100)); }
 
 export function collectResources(state: GameState, now = Date.now()) {
   const clock = getWorldClock(now);
@@ -220,6 +229,7 @@ export function prepareRaid(state: GameState, now = Date.now(), locationId: Raid
   const clock = getWorldClock(now);
   if (clock.phase !== "dusk") return { state, error: "RAID_WINDOW_CLOSED", message: `Назначение вылазки доступно только в сумерках. Сейчас: ${clock.phaseLabel}.` };
   if (state.raidAssignedAt) return { state, error: "RAID_ALREADY_ASSIGNED", message: "Вылазка уже назначена на эту ночь." };
+  if (state.energy < 25) return { state, error: "INSUFFICIENT_ENERGY", message: `Нужно минимум 25 энергии. Сейчас доступно ${state.energy}.` };
   if (state.militia < 4) return { state, error: "NOT_ENOUGH_MILITIA", message: "Нужно минимум 4 готовых ополченца." };
   return { state: { ...state, raidAssignedAt: now, raidWorldDay: clock.day, raidLocation: locationId, news: [`Вылазка назначена: ${RAID_LOCATIONS[locationId].name}, ночь Дня ${clock.day}.`, ...state.news].slice(0, 8) } };
 }
@@ -228,6 +238,7 @@ export function resolveRaid(state: GameState, now = Date.now()) {
   const clock = getWorldClock(now);
   if (clock.phase !== "night") return { state, error: "NIGHT_NOT_ACTIVE", message: "Вылазка исполняется только ночью." };
   if (!state.raidAssignedAt || state.raidWorldDay !== clock.day) return { state, error: "RAID_NOT_ASSIGNED", message: "Сначала назначьте вылазку в сумерках." };
+  if (state.energy < 25) return { state, error: "INSUFFICIENT_ENERGY", message: `Исполнение заблокировано: нужно 25 энергии, сейчас ${state.energy}.` };
   const location = RAID_LOCATIONS[state.raidLocation || "supermarket"];
   const sent = Math.max(4, Math.min(state.militia, Math.floor(state.militia * 0.75)));
   const signal = Math.abs(Math.sin(clock.day * 3.17 + location.risk * 0.013));
@@ -239,8 +250,12 @@ export function resolveRaid(state: GameState, now = Date.now()) {
   const lost = (Object.keys(collected) as Array<keyof RaidLoot>).reduce((loot, key) => ({ ...loot, [key]: Math.floor(collected[key] * lossRate) }), {} as RaidLoot);
   const returnedLoot = (Object.keys(collected) as Array<keyof RaidLoot>).reduce((loot, key) => ({ ...loot, [key]: Math.max(0, collected[key] - lost[key]) }), {} as RaidLoot);
   const weightUsed = Number((Object.keys(returnedLoot) as Array<keyof RaidLoot>).reduce((sum, key) => sum + returnedLoot[key] * RAID_WEIGHTS[key], 0).toFixed(1));
-  const report: RaidReport = { location: location.id, day: clock.day, sent, returned, nodes: location.depth, risk: location.risk, victory, collected, lost, returnedLoot, weightUsed, capacity: 12, energySpent: victory ? 18 : 28, moraleDelta: victory ? -5 : 3, resolvedAt: now, outcome: victory ? "Маршрут пройден. Груз доставлен в убежище." : "Контакт сорвал маршрут. Часть груза потеряна при отходе." };
-  const next: GameState = { ...state, resources: { ...state.resources, wood: state.resources.wood + returnedLoot.wood, stone: state.resources.stone + returnedLoot.stone, food: state.resources.food + returnedLoot.food, metal: state.resources.metal + returnedLoot.metal, gold: state.resources.gold + returnedLoot.gold }, militia: Math.min(state.militiaCapacity, state.militia - sent + returned), raidAssignedAt: null, raidWorldDay: null, raidLocation: null, lastRaidReport: report, totalRaids: state.totalRaids + 1, lastRaidAt: now, news: [`${victory ? "Вылазка завершена" : "Тяжёлое возвращение"}: ${location.name}, возвращено ${returned}/${sent}.`, ...state.news].slice(0, 8) };
+  const energySpent = victory ? 18 : 28;
+  const moraleDelta = victory ? -5 : 3;
+  const energyAfter = Math.max(0, state.energy - energySpent);
+  const moraleAfter = Math.max(0, Math.min(state.maxMorale, state.morale + moraleDelta));
+  const report: RaidReport = { location: location.id, day: clock.day, sent, returned, nodes: location.depth, risk: location.risk, victory, collected, lost, returnedLoot, weightUsed, capacity: 12, energySpent, moraleDelta, energyAfter, moraleAfter, resolvedAt: now, outcome: victory ? "Маршрут пройден. Груз доставлен в убежище." : "Контакт сорвал маршрут. Часть груза потеряна при отходе." };
+  const next: GameState = { ...state, resources: { ...state.resources, wood: state.resources.wood + returnedLoot.wood, stone: state.resources.stone + returnedLoot.stone, food: state.resources.food + returnedLoot.food, metal: state.resources.metal + returnedLoot.metal, gold: state.resources.gold + returnedLoot.gold }, militia: Math.min(state.militiaCapacity, state.militia - sent + returned), energy: energyAfter, morale: moraleAfter, raidAssignedAt: null, raidWorldDay: null, raidLocation: null, lastRaidReport: report, totalRaids: state.totalRaids + 1, lastRaidAt: now, news: [`${victory ? "Вылазка завершена" : "Тяжёлое возвращение"}: ${location.name}, возвращено ${returned}/${sent}. Энергия ${energyAfter}, мораль ${moraleAfter}.`, ...state.news].slice(0, 8) };
   return { state: next, victory, sent, returned, report };
 }
 
